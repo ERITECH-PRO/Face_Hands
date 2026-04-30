@@ -3,6 +3,43 @@ import cv2
 import os
 import sys
 import mediapipe as mp
+import requests
+
+
+def sync_known_faces_from_api(known_dir: str) -> None:
+   
+    base = os.getenv("API_BASE_URL", "").rstrip("/")
+    if not base:
+        return
+
+    headers = {}
+
+    os.makedirs(known_dir, exist_ok=True)
+
+    r = requests.get(f"{base}/api/images", headers=headers, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    files = data.get("files", [])
+
+    for f in files:
+        image_id = f.get("id")
+        url = f.get("url")
+        person = f.get("person") or "Unknown"
+        if not image_id or not url:
+            continue
+
+        person_dir = os.path.join(known_dir, person)
+        os.makedirs(person_dir, exist_ok=True)
+
+        local_path = os.path.join(person_dir, image_id)
+        if os.path.exists(local_path):
+            continue
+
+        img_res = requests.get(f"{base}{url}", headers=headers, timeout=30)
+        img_res.raise_for_status()
+        with open(local_path, "wb") as out:
+            out.write(img_res.content)
+
 
 # =============================
 # CONFIG FACE RECOGNITION
@@ -19,6 +56,11 @@ known_names = []
 if not os.path.exists(KNOWN_DIR):
     print("❌ dossier known_face introuvable")
     sys.exit()
+
+try:
+    sync_known_faces_from_api(KNOWN_DIR)
+except Exception as e:
+    print(f"⚠️ Sync API échouée: {e}")
 
 for name in os.listdir(KNOWN_DIR):
     person_path = os.path.join(KNOWN_DIR, name)
