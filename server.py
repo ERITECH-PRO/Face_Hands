@@ -1,0 +1,262 @@
+import os
+import sys
+import time
+from typing import Generator, Optional, Tuple
+
+import cv2
+import face_recognition
+import mediapipe as mp
+from flask import Flask, Response, render_template_string
+
+
+TOLERANCE = float(os.getenv("TOLERANCE", "0.5"))
+MODEL = os.getenv("MODEL", "hog")
+STREAM_URL = os.getenv("STREAM_URL", "0")  # "0" (webcam), rtsp://..., http(s)://..., file path
+FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "1280"))
+FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "720"))
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))  # 0-100
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+KNOWN_DIR = os.path.join(BASE_DIR, "known_face")
+
+
+def _load_known_faces(known_dir: str) -> Tuple[list, list]:
+    known_encodings = []
+    known_names = []
+
+    if not os.path.exists(known_dir):
+        return known_encodings, known_names
+
+    for name in os.listdir(known_dir):
+        person_path = os.path.join(known_dir, name)
+        if not os.path.isdir(person_path):
+            continue
+
+        for img_name in os.listdir(person_path):
+            img_path = os.path.join(person_path, img_name)
+            try:
+                image = face_recognition.load_image_file(img_path)
+                encodings = face_recognition.face_encodings(image)
+                if encodings:
+                    known_encodings.append(encodings[0])
+                    known_names.append(name)
+            except Exception:
+                # Skip unreadable/bad images; keep server alive.
+                continue
+
+    return known_encodings, known_names
+
+
+def _open_capture(stream_url: str) -> cv2.VideoCapture:
+    if stream_url.strip() == "0":
+        cap = cv2.VideoCapture(0)
+    else:
+        cap = cv2.VideoCapture(stream_url)
+
+    if FRAME_WIDTH > 0:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    if FRAME_HEIGHT > 0:
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+    return cap
+
+
+def _process_frame(
+    frame_bgr,
+    rgb,
+    known_encodings,
+    known_names,
+    hands,
+    mp_draw,
+    mp_hands,
+    tip_ids,
+):
+    face_recognized = False
+
+    locations = face_recognition.face_locations(rgb, model=MODEL)
+    encodings = face_recognition.face_encodings(rgb, locations)
+
+    for (top, right, bottom, left), face_encoding in zip(locations, encodings):
+        matches = face_recognition.compare_faces(known_encodings, face_encoding, TOLERANCE)
+
+        name = "Inconnu"
+        color = (0, 0, 255)
+
+        if True in matches:
+            index = matches.index(True)
+            name = known_names[index]
+            color = (0, 255, 0)
+            face_recognized = True
+
+        cv2.rectangle(frame_bgr, (left, top), (right, bottom), color, 2)
+        cv2.putText(
+            frame_bgr,
+            name.upper(),
+            (left, max(20, top - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            color,
+            2,
+        )
+
+    if face_recognized:
+        results = hands.process(rgb)
+
+        if results.multi_hand_landmarks and results.multi_handedness:
+            for hand_index, hand_lms in enumerate(results.multi_hand_landmarks):
+                lm_list = []
+                h, w, _ = frame_bgr.shape
+
+                for idx, lm in enumerate(hand_lms.landmark):
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    lm_list.append([idx, cx, cy])
+
+                mp_draw.draw_landmarks(frame_bgr, hand_lms, mp_hands.HAND_CONNECTIONS)
+
+                fingers = []
+                hand_label = results.multi_handedness[hand_index].classification[0].label
+
+                # Thumb
+                if hand_label == "Right":
+                    fingers.append(1 if lm_list[4][1] < lm_list[3][1] else 0)
+                else:
+                    fingers.append(1 if lm_list[4][1] > lm_list[3][1] else 0)
+
+                # Other fingers
+                for i in range(1, 5):
+                    fingers.append(1 if lm_list[tip_ids[i]][2] < lm_list[tip_ids[i] - 2][2] else 0)
+
+                total_fingers = fingers.count(1)
+                x_text = 20 if hand_label == "Left" else 300
+                cv2.putText(
+                    frame_bgr,
+                    f"{hand_label} hand: {total_fingers}",
+                    (x_text, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.1,
+                    (255, 0, 0),
+                    3,
+                )
+    else:
+        cv2.putText(
+            frame_bgr,
+            "Hand Tracking Locked",
+            (20, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),
+            3,
+        )
+
+    return frame_bgr
+
+
+def _frame_generator() -> Generator[bytes, None, None]:
+    known_encodings, known_names = _load_known_faces(KNOWN_DIR)
+
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=2,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.7,
+    )
+    mp_draw = mp.solutions.drawing_utils
+    tip_ids = [4, 8, 12, 16, 20]
+
+    cap = _open_capture(STREAM_URL)
+    if not cap.isOpened():
+        raise RuntimeError(f"Impossible d'ouvrir la source vidéo STREAM_URL={STREAM_URL!r}")
+
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), max(0, min(100, JPEG_QUALITY))]
+
+    last_ok = time.time()
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                if time.time() - last_ok > 10:
+                    raise RuntimeError("Perte du flux vidéo (10s sans frame).")
+                time.sleep(0.05)
+                continue
+
+            last_ok = time.time()
+
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            processed = _process_frame(
+                frame,
+                rgb,
+                known_encodings,
+                known_names,
+                hands,
+                mp_draw,
+                mp_hands,
+                tip_ids,
+            )
+
+            ok, jpg = cv2.imencode(".jpg", processed, encode_params)
+            if not ok:
+                continue
+
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n"
+            )
+    finally:
+        cap.release()
+
+
+app = Flask(__name__)
+
+
+@app.get("/")
+def index():
+    return render_template_string(
+        """
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            <title>Face + Hands</title>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 24px; }
+              .hint { color: #666; margin-top: 8px; }
+              img { max-width: 100%; height: auto; border: 1px solid #ddd; }
+              code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
+            </style>
+          </head>
+          <body>
+            <h2>Face + Hands (MJPEG)</h2>
+            <img src="/video.mjpeg" alt="video stream"/>
+            <div class="hint">Source: <code>{{ stream_url }}</code></div>
+          </body>
+        </html>
+        """,
+        stream_url=STREAM_URL,
+    )
+
+
+@app.get("/video.mjpeg")
+def video_mjpeg():
+    return Response(_frame_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+def main():
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    debug = os.getenv("DEBUG", "0") == "1"
+
+    try:
+        app.run(host=host, port=port, debug=debug, threaded=True)
+    except KeyboardInterrupt:
+        return 0
+    except Exception as e:
+        print(f"❌ Erreur serveur: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
