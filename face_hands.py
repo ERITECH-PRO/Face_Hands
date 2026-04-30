@@ -4,41 +4,43 @@ import os
 import sys
 import mediapipe as mp
 import requests
+from io import BytesIO
 
 
-def sync_known_faces_from_api(known_dir: str) -> None:
-   
+def load_known_faces_from_api_in_memory():
+    """
+
+    Variables d'env:
+    - API_BASE_URL: ex http://31.97.177.87:8012
+    """
     base = os.getenv("API_BASE_URL", "").rstrip("/")
     if not base:
-        return
+        return [], []
 
-    headers = {}
-
-    os.makedirs(known_dir, exist_ok=True)
-
-    r = requests.get(f"{base}/api/images", headers=headers, timeout=20)
+    r = requests.get(f"{base}/api/images", timeout=20)
     r.raise_for_status()
     data = r.json()
     files = data.get("files", [])
 
+    encodings_out = []
+    names_out = []
+
     for f in files:
-        image_id = f.get("id")
         url = f.get("url")
         person = f.get("person") or "Unknown"
-        if not image_id or not url:
+        if not url:
             continue
 
-        person_dir = os.path.join(known_dir, person)
-        os.makedirs(person_dir, exist_ok=True)
-
-        local_path = os.path.join(person_dir, image_id)
-        if os.path.exists(local_path):
-            continue
-
-        img_res = requests.get(f"{base}{url}", headers=headers, timeout=30)
+        img_res = requests.get(f"{base}{url}", timeout=30)
         img_res.raise_for_status()
-        with open(local_path, "wb") as out:
-            out.write(img_res.content)
+
+        image = face_recognition.load_image_file(BytesIO(img_res.content))
+        encs = face_recognition.face_encodings(image)
+        if encs:
+            encodings_out.append(encs[0])
+            names_out.append(person)
+
+    return encodings_out, names_out
 
 
 # =============================
@@ -54,28 +56,29 @@ known_encodings = []
 known_names = []
 
 if not os.path.exists(KNOWN_DIR):
-    print("❌ dossier known_face introuvable")
-    sys.exit()
+    os.makedirs(KNOWN_DIR, exist_ok=True)
 
-try:
-    sync_known_faces_from_api(KNOWN_DIR)
-except Exception as e:
-    print(f"⚠️ Sync API échouée: {e}")
+if os.getenv("API_BASE_URL", "").strip():
+    try:
+        known_encodings, known_names = load_known_faces_from_api_in_memory()
+    except Exception as e:
+        print(f"⚠️ Chargement API en mémoire échoué, fallback local: {e}")
 
-for name in os.listdir(KNOWN_DIR):
-    person_path = os.path.join(KNOWN_DIR, name)
+if not known_encodings:
+    for name in os.listdir(KNOWN_DIR):
+        person_path = os.path.join(KNOWN_DIR, name)
 
-    if not os.path.isdir(person_path):
-        continue
+        if not os.path.isdir(person_path):
+            continue
 
-    for img_name in os.listdir(person_path):
-        img_path = os.path.join(person_path, img_name)
-        image = face_recognition.load_image_file(img_path)
-        encodings = face_recognition.face_encodings(image)
+        for img_name in os.listdir(person_path):
+            img_path = os.path.join(person_path, img_name)
+            image = face_recognition.load_image_file(img_path)
+            encodings = face_recognition.face_encodings(image)
 
-        if encodings:
-            known_encodings.append(encodings[0])
-            known_names.append(name)
+            if encodings:
+                known_encodings.append(encodings[0])
+                known_names.append(name)
 
 print("✅ Visages chargés :", set(known_names))
 
