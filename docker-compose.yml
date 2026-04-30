@@ -4,8 +4,6 @@ services:
     container_name: face-hands
     restart: unless-stopped
     environment:
-      # Sur VPS, utilise plutôt un flux réseau:
-      # ex: rtsp://user:pass@IP:554/stream ou http://...
       STREAM_URL: "${STREAM_URL:-0}"
       TOLERANCE: "${TOLERANCE:-0.5}"
       MODEL: "${MODEL:-hog}"
@@ -17,5 +15,4 @@ services:
     ports:
       - "${PUBLIC_PORT:-8012}:8000"
     volumes:
-      # Mets tes visages ici: known_face/<personne>/*.jpg
       - ./known_face:/app/known_face:ro

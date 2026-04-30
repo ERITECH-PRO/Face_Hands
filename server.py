@@ -11,10 +11,10 @@ from flask import Flask, Response, render_template_string
 
 TOLERANCE = float(os.getenv("TOLERANCE", "0.5"))
 MODEL = os.getenv("MODEL", "hog")
-STREAM_URL = os.getenv("STREAM_URL", "0")  # "0" (webcam), rtsp://..., http(s)://..., file path
+STREAM_URL = os.getenv("STREAM_URL", "0")  
 FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "1280"))
 FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "720"))
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))  # 0-100
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80")) 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 KNOWN_DIR = os.path.join(BASE_DIR, "known_face")
@@ -41,7 +41,6 @@ def _load_known_faces(known_dir: str) -> Tuple[list, list]:
                     known_encodings.append(encodings[0])
                     known_names.append(name)
             except Exception:
-                # Skip unreadable/bad images; keep server alive.
                 continue
 
     return known_encodings, known_names
