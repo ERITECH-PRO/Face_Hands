@@ -4,7 +4,7 @@ services:
     container_name: face-hands
     restart: unless-stopped
     environment:
-      STREAM_URL: "${STREAM_URL:-http://31.97.177.87:8181/stream}"
+      STREAM_URL: "${STREAM_URL:-http://192.168.110.150:81/stream}"
       TOLERANCE: "${TOLERANCE:-0.5}"
       MODEL: "${MODEL:-hog}"
       DATA_DIR: "/app/data"
