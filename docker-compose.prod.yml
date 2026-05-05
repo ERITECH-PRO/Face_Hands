@@ -1,7 +1,7 @@
 services:
   face-hands:
     build: .
-    container_name: face-hands
+    container_name: face-hands-prod
     restart: unless-stopped
     environment:
       STREAM_URL: "${STREAM_URL:-http://192.168.110.150:81/stream}"
@@ -18,3 +18,15 @@ services:
     volumes:
       - ./known_face:/app/known_face:ro
       - ./data:/app/data
+    networks:
+      - face-recognition-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  face-recognition-network:
+    driver: bridge

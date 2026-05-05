@@ -15,7 +15,7 @@ from werkzeug.utils import secure_filename
 
 TOLERANCE = float(os.getenv("TOLERANCE", "0.5"))
 MODEL = os.getenv("MODEL", "hog")
-STREAM_URL = os.getenv("STREAM_URL", "0")
+STREAM_URL = os.getenv("STREAM_URL", "http://192.168.110.150:81/stream")
 FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "1280"))
 FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "720"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80")) 
